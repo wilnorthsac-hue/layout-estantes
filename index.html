@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Layout 3D de estantes (editable)</title>
+<style>
+:root{--bg:#e9edf1;--fg:#1b2430;--card:rgba(255,255,255,.92);--line:rgba(0,0,0,.18);--field:#fff;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#151b23;--fg:#e8edf3;--card:rgba(32,40,52,.94);--line:rgba(255,255,255,.2);--field:#151b23}}
+:root[data-theme="dark"]{--bg:#151b23;--fg:#e8edf3;--card:rgba(32,40,52,.94);--line:rgba(255,255,255,.2);--field:#151b23}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif;overflow:hidden}
+canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+button,select,input{font:inherit;color:var(--fg)}
+button{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 11px;font-size:14px;cursor:pointer}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #2f7de1;outline-offset:1px}
+button.on{background:#2f7de1;color:#fff;border-color:#2f7de1}
+.bar{position:absolute;left:10px;right:10px;top:calc(env(safe-area-inset-top,0px) + 10px);display:flex;flex-wrap:wrap;gap:6px;pointer-events:none}
+.bar button{pointer-events:auto}
+.leg{position:absolute;left:10px;bottom:calc(env(safe-area-inset-bottom,0px) + 10px);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:13px;line-height:1.7}
+.leg i{display:inline-block;width:22px;height:6px;border-radius:3px;margin-right:8px;vertical-align:middle}
+.panel{position:absolute;right:10px;bottom:calc(env(safe-area-inset-bottom,0px) + 10px);width:min(360px,calc(100% - 20px));max-height:62%;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;display:none;font-size:14px}
+.panel.open{display:block}
+.panel h2{margin:0 0 8px;font-size:16px}
+.row{display:flex;gap:6px;margin-bottom:8px;align-items:center}
+.row>*{min-width:0}
+.panel input,.panel select{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:6px}
+.tabs{display:flex;gap:4px;margin-bottom:8px}
+.tabs button{flex:1;padding:6px 2px}
+.zr{display:grid;grid-template-columns:1fr auto;gap:4px;padding:8px 0;border-top:1px solid var(--line)}
+.zr .l2{display:flex;gap:4px;align-items:center;grid-column:1/3}
+.zr input[type=color]{padding:0;width:34px;height:30px}
+.zr input[type=number]{width:58px}
+.zr .l2 select{flex:1}
+.hint{margin:8px 0 0;font-size:12px;opacity:.75;line-height:1.4}
+@media (max-width:700px){.leg{display:none}}
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Layout 3D editable de los estantes"></canvas>
+<div class="bar">
+  <button id="b3d" class="on">Vista 3D</button>
+  <button id="btop">Planta</button>
+  <button id="brot">Girar solo</button>
+  <button id="bin" aria-label="Acercar">+</button>
+  <button id="bout" aria-label="Alejar">−</button>
+  <button id="bed" class="on">Editar</button>
+</div>
+<div class="leg">
+  <div><i style="background:#f2b705"></i>Estante 2 (fondo)</div>
+  <div><i style="background:#e0192e"></i>Estante 1 (derecha)</div>
+  <div><i style="background:#0b5c9e"></i>Estante 3 (izquierda)</div>
+  <div><i style="background:#0b9444"></i>Pared y puerta</div>
+</div>
+
+<div class="panel" id="panel">
+  <h2>Editar estante</h2>
+  <div class="row"><select id="selS" aria-label="Estante"></select><input id="nm" aria-label="Nombre del estante"></div>
+  <div class="tabs" id="tabs"></div>
+  <div id="zones"></div>
+  <div class="row" style="margin-top:8px"><button id="addz">+ Agregar zona</button><button id="rst">Restablecer todo</button></div>
+  <p class="hint">Cada nivel se divide en zonas, de izquierda a derecha mirando el estante desde el pasillo. El ancho es relativo: una zona con 40 ocupa el doble que una con 20. También puedes tocar un estante en el 3D para elegirlo. Los cambios se guardan en este dispositivo.</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.shadowMap.enabled=true;
+const scene=new THREE.Scene();
+const dark=matchMedia('(prefers-color-scheme: dark)').matches;
+scene.background=new THREE.Color(dark?0x151b23:0xe9edf1);
+const cam=new THREE.PerspectiveCamera(45,1,0.1,200);
+
+// Escala: 1 cuadro de la cuadrícula (21 px) = 1 m
+const S=1/21,CX=210,CY=214;
+const X=p=>(p-CX)*S, Z=p=>(p-CY)*S;
+
+scene.add(new THREE.HemisphereLight(0xffffff,0x667788,0.85));
+const sun=new THREE.DirectionalLight(0xffffff,0.7);
+sun.position.set(-8,18,10);sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-16,right:16,top:16,bottom:-16,near:1,far:50});
+scene.add(sun);
+
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(24,24),new THREE.MeshStandardMaterial({color:dark?0x2a3340:0xf6f8fa}));
+floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;scene.add(floor);
+const grid=new THREE.GridHelper(24,24,dark?0x4a586b:0x9db4cf,dark?0x3a4656:0xc3d3e6);
+grid.position.y=0.01;scene.add(grid);
+
+function box(x1,y1,x2,y2,h,y0,color,opts,grp){
+  const m=new THREE.Mesh(new THREE.BoxGeometry((x2-x1)*S,h,(y2-y1)*S),new THREE.MeshStandardMaterial(Object.assign({color},opts||{})));
+  m.position.set(X((x1+x2)/2),y0+h/2,Z((y1+y2)/2));
+  m.castShadow=true;m.receiveShadow=true;(grp||scene).add(m);return m;
+}
+function fitText(g,text,max,size){
+  let fs=size;g.font='bold '+fs+'px Trebuchet MS, sans-serif';
+  while(g.measureText(text).width>max&&fs>16){fs-=2;g.font='bold '+fs+'px Trebuchet MS, sans-serif'}
+}
+function label(text,x,y,z,w,grp){
+  const c=document.createElement('canvas');c.width=512;c.height=128;
+  const g=c.getContext('2d');
+  g.fillStyle='rgba(255,255,255,.95)';g.strokeStyle='#1b2430';g.lineWidth=4;
+  g.beginPath();g.roundRect?g.roundRect(6,6,500,116,18):g.rect(6,6,500,116);g.fill();g.stroke();
+  g.fillStyle='#1b2430';g.textAlign='center';g.textBaseline='middle';
+  fitText(g,text,470,56);g.fillText(text,256,68);
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c)}));
+  s.scale.set(w,w/4,1);s.position.set(x,y,z);(grp||scene).add(s);
+}
+
+// ---------- Datos ----------
+const LV=[0.2,0.95,1.7,2.45],T=0.06,H=2.6;
+const TYPES=[['guantes','Guantes'],['ropa','Ropa'],['calzado','Zapatos'],['casco','Cascos'],['mascarilla','Mascarillas'],['cajas','Cajas u otros'],['vacio','Vacío']];
+const DIM={guantes:[14,.3],ropa:[18,.45],calzado:[12,.28],mascarilla:[10,.2],cajas:[24,.5]};
+// face: lado del pasillo donde se ve el frente del estante
+const SH=[
+  {rect:[296,146,352,382],c:0xe0192e,face:'W'},
+  {rect:[63,50,300,105],c:0xf2b705,face:'S'},
+  {rect:[0,154,52,390],c:0x0b5c9e,face:'E'}
+];
+const zn=(t,k,c,w)=>({t,k,c,w});
+function defaults(){return [
+  {name:'Estante 1',lv:[
+    [zn('Guantes de soldar','guantes','#b5651d',140),zn('Zapatos','calzado','#2e2e2e',46),zn('Cascos','casco','#f2c200',46)],
+    [zn('Badana','guantes','#d8c9a0',47),zn('Anticorte','guantes','#5a6b7a',47),zn('Flexibles','guantes','#e8833a',46),zn('Zapatos','calzado','#2e2e2e',46),zn('Cascos','casco','#2f7de1',46)],
+    [zn('Ropa de trabajo','ropa','#2b4a8b',140),zn('Zapatos','calzado','#6b4a2b',46),zn('Mascarillas','mascarilla','#f2f2f2',46)],
+    [zn('Libre','vacio','#cccccc',140),zn('Zapatos','calzado','#2e2e2e',46),zn('Mascarillas','mascarilla','#f2f2f2',46)]
+  ]},
+  {name:'Estante 2',lv:[0,1,2,3].map(()=>[zn('Sin asignar','vacio','#cccccc',1)])},
+  {name:'Estante 3',lv:[0,1,2,3].map(()=>[zn('Sin asignar','vacio','#cccccc',1)])}
+];}
+const KEY='wilsnorth-layout-3d-v1';
+let data=null;
+try{data=JSON.parse(localStorage.getItem(KEY))}catch(e){data=null}
+if(!Array.isArray(data)||data.length!==3||!data.every(s=>s&&Array.isArray(s.lv)&&s.lv.length===4))data=defaults();
+function save(){try{localStorage.setItem(KEY,JSON.stringify(data))}catch(e){}}
+
+// ---------- Estructura fija de los estantes ----------
+const dyn=[];
+SH.forEach((s,i)=>{
+  const [x1,y1,x2,y2]=s.rect,horiz=(x2-x1)>(y2-y1);
+  const st=new THREE.Group();scene.add(st);
+  const len=(horiz?x2-x1:y2-y1)*S,n=Math.max(2,Math.round(len/2)+1);
+  for(let k=0;k<n;k++){
+    const f=k/(n-1);
+    if(horiz){const p=x1+(x2-x1)*f;box(p-1.5,y1,p+1.5,y2,H,0,s.c,null,st)}
+    else{const p=y1+(y2-y1)*f;box(x1,p-1.5,x2,p+1.5,H,0,s.c,null,st)}
+  }
+  LV.forEach(l=>box(x1,y1,x2,y2,T,l,0x9aa5b1,{metalness:.4,roughness:.5},st));
+  st.traverse(o=>o.userData.s=i);
+  const g=new THREE.Group();scene.add(g);dyn.push(g);
+});
+
+// ---------- Contenido editable ----------
+function tag(i,text,li,mid,wm,grp){
+  const [x1,y1,x2,y2]=SH[i].rect,f=SH[i].face;
+  const c=document.createElement('canvas');c.width=512;c.height=96;const g=c.getContext('2d');
+  g.fillStyle='#fff';g.fillRect(0,0,512,96);
+  g.strokeStyle='#'+SH[i].c.toString(16).padStart(6,'0');g.lineWidth=8;g.strokeRect(4,4,504,88);
+  g.fillStyle='#1b2430';g.textAlign='center';g.textBaseline='middle';
+  fitText(g,text,470,44);g.fillText(text,256,50);
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(wm,wm*96/512),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(c)}));
+  const y=LV[li]+0.28;
+  if(f==='W'){m.rotation.y=-Math.PI/2;m.position.set(X(x1)-0.03,y,Z(y1+mid))}
+  else if(f==='E'){m.rotation.y=Math.PI/2;m.position.set(X(x2)+0.03,y,Z(y1+mid))}
+  else{m.position.set(X(x1+mid),y,Z(y2)+0.03)}
+  grp.add(m);
+}
+function fill(i){
+  const g=dyn[i];
+  while(g.children.length)g.remove(g.children[0]);
+  const [x1,y1,x2,y2]=SH[i].rect,horiz=(x2-x1)>(y2-y1),len=horiz?x2-x1:y2-y1,flip=SH[i].face==='E';
+  const cross=horiz?(y1+y2)/2:(x1+x2)/2,depth=horiz?y2-y1:x2-x1;
+  data[i].lv.forEach((zones,li)=>{
+    const wt=z=>Math.max(0.1,+z.w||1);
+    const sum=zones.reduce((a,z)=>a+wt(z),0);
+    let acc=0;
+    zones.forEach(z=>{
+      const w=wt(z)/sum*len;
+      let a=acc,b=acc+w;acc+=w;
+      if(flip){const t=a;a=len-b;b=len-t}
+      const R=(p,q)=>horiz?[x1+p,y1+6,x1+q,y2-6]:[x1+6,y1+p,x2-6,y1+q];
+      const col=new THREE.Color(z.c||'#cccccc'),dim=DIM[z.k];
+      if(dim){
+        let k=0;
+        for(let p=a+4;p+dim[0]<=b-3;p+=dim[0]+3,k++){
+          const r=R(p,p+dim[0]);
+          box(r[0],r[1],r[2],r[3],dim[1],LV[li]+T,k%2?col.clone().multiplyScalar(.75):col,null,g);
+        }
+      }else if(z.k==='casco'){
+        for(let p=a+10;p<b-8;p+=15)[-0.25,0.25].forEach(o=>{
+          const h=new THREE.Mesh(new THREE.SphereGeometry(0.3,16,10,0,Math.PI*2,0,Math.PI/2),new THREE.MeshStandardMaterial({color:col}));
+          const cp=cross+o*depth;
+          h.position.set(horiz?X(x1+p):X(cp),LV[li]+T,horiz?Z(cp):Z(y1+p));
+          h.castShadow=true;g.add(h);
+        });
+      }
+      const zm=(b-a)*S;
+      tag(i,z.t||'',li,(a+b)/2,Math.min(2.6,Math.max(0.8,zm-0.1)),g);
+    });
+  });
+  const cx=X((x1+x2)/2),cz=Z((y1+y2)/2);
+  label(data[i].name||'Estante',cx,H+0.75,cz,3.4,g);
+  g.traverse(o=>o.userData.s=i);
+}
+dyn.forEach((_,i)=>fill(i));
+
+// ---------- Estáticos: franjas, pared, puerta ----------
+const strip=(x1,y1,x2,y2,c)=>box(x1,y1,x2,y2,0.05,0.01,c,{emissive:c,emissiveIntensity:.25});
+strip(52,111,316,117,0xf2b705);
+strip(276,146,282,398,0xe0192e);
+strip(72,150,78,405,0x0b5c9e);
+box(364,49,370,398,3.2,0,0x0b9444);
+box(364,49,421,55,3.2,0,0x0b9444);
+box(374,36,420,41,2.3,0,0x8a5a2b);
+label('PUERTA',X(397),2.9,Z(38),2.6);
+
+// ---------- Panel de edición ----------
+const $=id=>document.getElementById(id);
+const cur={s:0,l:0};
+let timer=null;
+function changed(redraw){
+  save();
+  clearTimeout(timer);timer=setTimeout(()=>fill(cur.s),120);
+  if(redraw)renderPanel();
+}
+function el(tag,cls){const e=document.createElement(tag);if(cls)e.className=cls;return e}
+function renderPanel(){
+  const sel=$('selS');
+  if(!sel.options.length)SH.forEach((_,i)=>sel.appendChild(new Option('',i)));
+  data.forEach((s,i)=>sel.options[i].textContent=s.name||('Estante '+(i+1)));
+  sel.value=cur.s;
+  if(document.activeElement!==$('nm'))$('nm').value=data[cur.s].name;
+  const tabs=$('tabs');tabs.textContent='';
+  for(let l=0;l<4;l++){
+    const b=el('button',l===cur.l?'on':'');b.textContent='Nivel '+(l+1);
+    b.onclick=()=>{cur.l=l;renderPanel()};tabs.appendChild(b);
+  }
+  const zones=data[cur.s].lv[cur.l],box_=$('zones');box_.textContent='';
+  zones.forEach((z,idx)=>{
+    const d=el('div','zr');
+    const t=el('input');t.value=z.t;t.placeholder='Nombre de la zona';t.setAttribute('aria-label','Nombre de la zona');
+    t.oninput=()=>{z.t=t.value;changed(false)};
+    const act=el('div');act.style.display='flex';act.style.gap='4px';
+    const mk=(txt,fn,lab)=>{const b=el('button');b.textContent=txt;b.setAttribute('aria-label',lab);b.onclick=fn;return b};
+    act.append(
+      mk('‹',()=>{if(idx>0){[zones[idx-1],zones[idx]]=[zones[idx],zones[idx-1]];changed(true)}},'Mover a la izquierda'),
+      mk('›',()=>{if(idx<zones.length-1){[zones[idx+1],zones[idx]]=[zones[idx],zones[idx+1]];changed(true)}},'Mover a la derecha'),
+      mk('×',()=>{if(zones.length>1){zones.splice(idx,1);changed(true)}},'Quitar zona')
+    );
+    const l2=el('div','l2');
+    const k=el('select');k.setAttribute('aria-label','Tipo de artículo');
+    TYPES.forEach(([v,n])=>k.appendChild(new Option(n,v)));k.value=z.k;
+    k.onchange=()=>{z.k=k.value;changed(false)};
+    const c=el('input');c.type='color';c.value=z.c;c.setAttribute('aria-label','Color');
+    c.oninput=()=>{z.c=c.value;changed(false)};
+    const w=el('input');w.type='number';w.min='1';w.value=z.w;w.setAttribute('aria-label','Ancho relativo');w.title='Ancho relativo';
+    w.oninput=()=>{z.w=+w.value||1;changed(false)};
+    l2.append(k,c,w);
+    d.append(t,act,l2);box_.appendChild(d);
+  });
+}
+$('selS').onchange=e=>{cur.s=+e.target.value;renderPanel()};
+$('nm').oninput=e=>{data[cur.s].name=e.target.value;changed(false);
+  const o=$('selS').options[cur.s];if(o)o.textContent=e.target.value||('Estante '+(cur.s+1))};
+$('addz').onclick=()=>{data[cur.s].lv[cur.l].push(zn('Nueva zona','cajas','#c8a46a',40));changed(true)};
+$('rst').onclick=()=>{if(confirm('¿Restablecer todos los estantes a los valores iniciales?')){data=defaults();dyn.forEach((_,i)=>fill(i));save();renderPanel()}};
+function togglePanel(open){
+  const p=$('panel');p.classList.toggle('open',open);$('bed').classList.toggle('on',open);
+}
+$('bed').onclick=()=>togglePanel(!$('panel').classList.contains('open'));
+togglePanel(innerWidth>700);
+renderPanel();
+
+// ---------- Cámara orbital ----------
+let th=0.6,ph=1.0,r=27,auto=false;
+const tgt=new THREE.Vector3(0,0.8,0);
+function place(){
+  cam.position.set(tgt.x+r*Math.sin(ph)*Math.sin(th),tgt.y+r*Math.cos(ph),tgt.z+r*Math.sin(ph)*Math.cos(th));
+  cam.lookAt(tgt);
+}
+let drag=null,moved=0;
+canvas.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY};moved=0;canvas.setPointerCapture(e.pointerId);canvas.style.cursor='grabbing'});
+canvas.addEventListener('pointermove',e=>{
+  if(!drag)return;
+  const dx=e.clientX-drag.x,dy=e.clientY-drag.y;moved+=Math.abs(dx)+Math.abs(dy);
+  th-=dx*0.006;ph=Math.min(1.5,Math.max(0.02,ph-dy*0.006));
+  drag={x:e.clientX,y:e.clientY};setMode(false);
+});
+canvas.addEventListener('pointerup',e=>{
+  canvas.style.cursor='grab';
+  if(drag&&moved<6){
+    const rc=new THREE.Raycaster(),rect=canvas.getBoundingClientRect();
+    rc.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-((e.clientY-rect.top)/rect.height*2-1)),cam);
+    const hit=rc.intersectObjects(scene.children,true).find(h=>h.object.userData.s!==undefined);
+    if(hit){cur.s=hit.object.userData.s;renderPanel();togglePanel(true)}
+  }
+  drag=null;
+});
+canvas.addEventListener('wheel',e=>{e.preventDefault();r=Math.min(50,Math.max(6,r*(1+e.deltaY*0.001)))},{passive:false});
+function setMode(top){$('btop').classList.toggle('on',top);$('b3d').classList.toggle('on',!top)}
+$('b3d').onclick=()=>{ph=1.0;th=0.6;r=27;setMode(false)};
+$('btop').onclick=()=>{ph=0.02;th=0;r=30;setMode(true)};
+$('brot').onclick=()=>{auto=!auto;$('brot').classList.toggle('on',auto)};
+$('bin').onclick=()=>{r=Math.max(6,r*0.8)};
+$('bout').onclick=()=>{r=Math.min(50,r*1.25)};
+
+function resize(){
+  const w=innerWidth,h=innerHeight;
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix();
+}
+addEventListener('resize',resize);resize();
+(function loop(){
+  if(auto)th+=0.004;
+  place();renderer.render(scene,cam);requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
